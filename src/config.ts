@@ -14,6 +14,10 @@ export interface AppConfig {
   uploadsDir: string;
   adminDist: string;
   curseforgeApiKey: string;
+  buildDir: string;
+  launcherRepoUrl: string;
+  launcherRepoRef: string;
+  publicApiUrl: string;
 }
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
@@ -32,5 +36,18 @@ export function loadConfig(): AppConfig {
     uploadsDir: process.env.UPLOADS_DIR || path.join(process.cwd(), "uploads"),
     adminDist: process.env.ADMIN_DIST || path.join(process.cwd(), "admin", "dist"),
     curseforgeApiKey: (process.env.CURSEFORGE_API_KEY || "").replaceAll("$$", "$"),
+    buildDir: process.env.BUILD_DIR || path.join(process.cwd(), "builds"),
+    launcherRepoUrl:
+      process.env.LAUNCHER_REPO_URL || "https://github.com/Jenison4ik/Custom-MC-Launcher.git",
+    launcherRepoRef: process.env.LAUNCHER_REPO_REF || "main",
+    publicApiUrl: publicApiUrl(),
   };
+}
+
+function publicApiUrl(): string {
+  const explicit = (process.env.PUBLIC_API_URL || "").trim().replace(/\/$/, "");
+  if (explicit) return explicit;
+  const domain = (process.env.DOMAIN || "").trim();
+  if (!domain) return "";
+  return `https://${domain}/minecraft/api`;
 }

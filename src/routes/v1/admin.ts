@@ -20,6 +20,18 @@ import { listReleaseIds, loaderCatalog, VersionListError } from "../../services/
 import { listModIssues } from "../../services/modIssues.js";
 import { listMods } from "../../services/modList.js";
 import { LOADERS, ProfileError, readProfile, saveProfile, type Loader } from "../../services/profile.js";
+import {
+  BuildInProgressError,
+  getBuildStatus,
+  startLauncherBuild,
+} from "../../services/launcherBuild.js";
+import {
+  defaultLauncherSettings,
+  LauncherSettingsError,
+  readLauncherSettingsView,
+  saveLauncherIcon,
+  saveLauncherSettings,
+} from "../../services/launcherSettings.js";
 
 function statusOf(error: unknown): number {
   if (typeof error === "object" && error !== null && "status" in error) {
@@ -210,6 +222,73 @@ export function adminRouter(config: AppConfig): Router {
       const status = error instanceof CatalogError ? error.status : statusOf(error);
       if (status >= 500) console.error(error);
       res.status(status).json({ error: error instanceof CatalogError ? error.message : "Error installing mod" });
+    }
+  });
+
+  router.get("/launcher/settings", async (_req, res) => {
+    try {
+      const settings = await readLauncherSettingsView(
+        config.dataDir,
+        defaultLauncherSettings(config.publicApiUrl)
+      );
+      res.json(settings);
+    } catch (error) {
+      const status = error instanceof LauncherSettingsError ? error.status : 500;
+      if (status >= 500) console.error(error);
+      res.status(status).json({
+        error: error instanceof LauncherSettingsError ? error.message : "Error reading launcher settings",
+      });
+    }
+  });
+
+  router.put("/launcher/settings", async (req, res) => {
+    try {
+      const settings = await saveLauncherSettings(config.dataDir, req.body);
+      res.json(settings);
+    } catch (error) {
+      const status = error instanceof LauncherSettingsError ? error.status : 500;
+      if (status >= 500) console.error(error);
+      res.status(status).json({
+        error: error instanceof LauncherSettingsError ? error.message : "Error saving launcher settings",
+      });
+    }
+  });
+
+  router.put("/launcher/icon", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ error: "Нужен файл PNG" });
+        return;
+      }
+      await saveLauncherIcon(config.dataDir, req.file.path);
+      res.json({ ok: true });
+    } catch (error) {
+      const status = error instanceof LauncherSettingsError ? error.status : 500;
+      if (status >= 500) console.error(error);
+      res.status(status).json({
+        error: error instanceof LauncherSettingsError ? error.message : "Error saving launcher icon",
+      });
+    } finally {
+      if (req.file) await fs.promises.rm(req.file.path, { force: true });
+    }
+  });
+
+  router.get("/launcher/build", async (_req, res) => {
+    const status = await getBuildStatus(config);
+    res.json(status);
+  });
+
+  router.post("/launcher/build", (_req, res) => {
+    try {
+      startLauncherBuild(config);
+      res.status(202).json({ status: "running" });
+    } catch (error) {
+      if (error instanceof BuildInProgressError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
+      console.error(error);
+      res.status(500).json({ error: "Error starting launcher build" });
     }
   });
 

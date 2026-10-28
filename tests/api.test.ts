@@ -30,6 +30,29 @@ const installer = vi.hoisted(() => ({
 
 vi.mock("@xmcl/installer", () => installer);
 
+const launcherBuild = vi.hoisted(() => {
+  class BuildInProgressError extends Error {
+    status = 409;
+
+    constructor(message = "Сборка уже выполняется") {
+      super(message);
+      this.name = "BuildInProgressError";
+    }
+  }
+
+  return {
+    BuildInProgressError,
+    startLauncherBuild: vi.fn(),
+    getBuildStatus: vi.fn(),
+  };
+});
+
+vi.mock("../src/services/launcherBuild.js", () => ({
+  BuildInProgressError: launcherBuild.BuildInProgressError,
+  startLauncherBuild: launcherBuild.startLauncherBuild,
+  getBuildStatus: launcherBuild.getBuildStatus,
+}));
+
 vi.mock("@xmcl/curseforge", () => ({
   FileModLoaderType: { Any: 0, Forge: 1, Fabric: 4, Quilt: 5, NeoForge: 6 },
   FileReleaseType: { Release: 1, Beta: 2, Alpha: 3 },
@@ -66,6 +89,10 @@ describe("api", () => {
       uploadsDir: path.join(root, "uploads"),
       adminDist: path.join(root, "missing-admin"),
       curseforgeApiKey: "",
+      buildDir: path.join(root, "builds"),
+      launcherRepoUrl: "https://github.com/example/launcher.git",
+      launcherRepoRef: "main",
+      publicApiUrl: "https://example.test/minecraft/api",
     };
     app = createApp(config);
   });
@@ -97,6 +124,18 @@ describe("api", () => {
     installer.getQuiltLoaderVersionsByMinecraft.mockResolvedValue([
       { loader: { version: "0.26.1", stable: true } },
     ]);
+    launcherBuild.startLauncherBuild.mockReset();
+    launcherBuild.startLauncherBuild.mockImplementation(() => undefined);
+    launcherBuild.getBuildStatus.mockReset();
+    launcherBuild.getBuildStatus.mockResolvedValue({
+      status: "idle",
+      startedAt: null,
+      finishedAt: null,
+      commit: null,
+      version: null,
+      error: null,
+      log: "",
+    });
   });
 
   async function token(): Promise<string> {
@@ -566,7 +605,137 @@ logoFile="logo.png"
     expect(again.body.mods[0].iconDataUrl).toBe(example?.iconDataUrl);
   });
 
+  it("stores launcher settings and rejects invalid ones", async () => {
+    const auth = await token();
+    const defaults = await request(app)
+      .get("/minecraft/api/v1/admin/launcher/settings")
+      .set("Authorization", `Bearer ${auth}`);
+    expect(defaults.status).toBe(200);
+    expect(defaults.body.apiUrl).toBe("https://example.test/minecraft/api");
+    expect(defaults.body.productName).toBe("Custom Minecraft Launcher");
+    expect(defaults.body.hasIcon).toBe(false);
+
+    const invalid = await request(app)
+      .put("/minecraft/api/v1/admin/launcher/settings")
+      .set("Authorization", `Bearer ${auth}`)
+      .send({
+        apiUrl: "not a url",
+        productName: "Name",
+        appId: "ru.jenison.cml",
+        version: "",
+        theme: {},
+      });
+    expect(invalid.status).toBe(400);
+
+    const badColor = await request(app)
+      .put("/minecraft/api/v1/admin/launcher/settings")
+      .set("Authorization", `Bearer ${auth}`)
+      .send({
+        apiUrl: "https://play.example/minecraft/api",
+        productName: "Name",
+        appId: "ru.jenison.cml",
+        version: "1.2.3",
+        theme: { "--color-bg": "red; background: url(https://evil)" },
+      });
+    expect(badColor.status).toBe(400);
+
+    const saved = await request(app)
+      .put("/minecraft/api/v1/admin/launcher/settings")
+      .set("Authorization", `Bearer ${auth}`)
+      .send({
+        apiUrl: "https://play.example/minecraft/api/",
+        productName: "My Launcher",
+        appId: "com.example.launcher",
+        version: "1.2.3",
+        theme: { "--color-bg": "#112233" },
+      });
+    expect(saved.status).toBe(200);
+    expect(saved.body.apiUrl).toBe("https://play.example/minecraft/api");
+
+    const again = await request(app)
+      .get("/minecraft/api/v1/admin/launcher/settings")
+      .set("Authorization", `Bearer ${auth}`);
+    expect(again.body.productName).toBe("My Launcher");
+    expect(again.body.theme["--color-bg"]).toBe("#112233");
+  });
+
+  it("rejects an icon that is not a large enough PNG", async () => {
+    const auth = await token();
+    const text = await request(app)
+      .put("/minecraft/api/v1/admin/launcher/icon")
+      .set("Authorization", `Bearer ${auth}`)
+      .attach("file", Buffer.from("not-a-png"), "icon.png");
+    expect(text.status).toBe(400);
+
+    const tiny = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64"
+    );
+    const small = await request(app)
+      .put("/minecraft/api/v1/admin/launcher/icon")
+      .set("Authorization", `Bearer ${auth}`)
+      .attach("file", tiny, "icon.png");
+    expect(small.status).toBe(400);
+
+    const icon = pngWithSize(256, 256);
+    const ok = await request(app)
+      .put("/minecraft/api/v1/admin/launcher/icon")
+      .set("Authorization", `Bearer ${auth}`)
+      .attach("file", icon, "icon.png");
+    expect(ok.status).toBe(200);
+
+    const stored = await fs.readFile(path.join(config.dataDir, "launcher-icon.png"));
+    expect(stored.equals(icon)).toBe(true);
+  });
+
+  it("refuses to start a launcher build that is already running", async () => {
+    const auth = await token();
+    launcherBuild.startLauncherBuild.mockImplementation(() => {
+      throw new launcherBuild.BuildInProgressError();
+    });
+    const response = await request(app)
+      .post("/minecraft/api/v1/admin/launcher/build")
+      .set("Authorization", `Bearer ${auth}`);
+    expect(response.status).toBe(409);
+    expect(response.body.error).toBe("Сборка уже выполняется");
+  });
+
+  it("starts a launcher build when none is running", async () => {
+    const auth = await token();
+    const response = await request(app)
+      .post("/minecraft/api/v1/admin/launcher/build")
+      .set("Authorization", `Bearer ${auth}`);
+    expect(response.status).toBe(202);
+    expect(launcherBuild.startLauncherBuild).toHaveBeenCalledOnce();
+  });
+
+  it("does not let the installer route replace latest.yml", async () => {
+    const response = await request(app).get("/minecraft/api/latest.yml");
+    expect(response.status).toBe(500);
+    expect(response.text).toContain("latest.yml");
+  });
+
+  it("serves only launcher-setup executables", async () => {
+    await fs.writeFile(path.join(config.launcherDir, "launcher-setup-1.2.3.exe"), "MZ-test");
+    await fs.writeFile(path.join(root, "secret.exe"), "secret-bytes");
+
+    const ok = await request(app).get("/minecraft/api/launcher-setup-1.2.3.exe").buffer(true).parse(binaryParser);
+    expect(ok.status).toBe(200);
+    expect(ok.body.toString("utf8")).toBe("MZ-test");
+
+    const other = await request(app).get("/minecraft/api/other.exe");
+    expect(other.status).toBe(404);
+
+    const missing = await request(app).get("/minecraft/api/launcher-setup-9.9.9.exe");
+    expect(missing.status).toBe(404);
+
+    const escape = await request(app).get("/minecraft/api/launcher-setup-..%2F..%2Fsecret.exe");
+    expect(escape.status).not.toBe(200);
+    expect(JSON.stringify(escape.body)).not.toContain("secret-bytes");
+  });
+
   it("lists the published launcher files", async () => {
+    await fs.rm(config.launcherDir, { recursive: true, force: true });
     const auth = await token();
     const empty = await request(app)
       .get("/minecraft/api/v1/admin/launcher")
@@ -592,6 +761,20 @@ logoFile="logo.png"
     expect(listed.body.files).toEqual([{ name: "note.txt", size: 2 }]);
   });
 });
+
+function pngWithSize(width: number, height: number): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  const chunk = (type: string, data: Buffer) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length, 0);
+    return Buffer.concat([length, Buffer.from(type), data, Buffer.alloc(4)]);
+  };
+  return Buffer.concat([signature, chunk("IHDR", ihdr), chunk("IEND", Buffer.alloc(0))]);
+}
 
 function zipOf(entries: Record<string, Buffer | string>): Promise<Buffer> {
   return new Promise((resolve, reject) => {

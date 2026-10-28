@@ -13,6 +13,7 @@ export function createApp(config: AppConfig): Express {
   fs.mkdirSync(config.dataDir, { recursive: true });
   fs.mkdirSync(config.launcherDir, { recursive: true });
   fs.mkdirSync(config.uploadsDir, { recursive: true });
+  fs.mkdirSync(config.buildDir, { recursive: true });
 
   const app = express();
   app.disable("x-powered-by");

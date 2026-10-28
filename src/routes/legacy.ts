@@ -4,6 +4,7 @@ import { Router } from "express";
 import type { AppConfig } from "../config.js";
 import { ensureZip } from "../services/archive.js";
 import { ensureManifest } from "../services/manifest.js";
+import { resolveInside, SafePathError } from "../services/safePath.js";
 
 export function legacyRouter(config: AppConfig): Router {
   const router = Router();
@@ -70,6 +71,29 @@ export function legacyRouter(config: AppConfig): Router {
       console.error(error);
       if (!res.headersSent) res.status(500).json({ error: "Error downloading file" });
     }
+  });
+
+  router.get("/:file", (req, res) => {
+    const file = req.params.file;
+    if (typeof file !== "string" || !/^launcher-setup-[A-Za-z0-9._-]+\.exe$/.test(file)) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+    let absolute: string;
+    try {
+      absolute = resolveInside(config.launcherDir, file);
+    } catch (error) {
+      if (error instanceof SafePathError) {
+        res.status(400).json({ error: "Invalid path" });
+        return;
+      }
+      throw error;
+    }
+    res.sendFile(absolute, { dotfiles: "deny" }, (error) => {
+      if (!error || res.headersSent) return;
+      const missing = "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
+      res.status(missing ? 404 : 500).json({ error: missing ? "File not found" : "Error downloading file" });
+    });
   });
 
   return router;
