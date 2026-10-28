@@ -280,6 +280,95 @@ Modrinth вызывается без ключа. CurseForge использует
 | `400` | Нет файла (`No file uploaded`), нет заголовка `version` (`Version is required`), нет `yml` (`No YML content provided`), не `.zip` (`Only .zip files are allowed`) |
 | `500` | `{ "error": "Error uploading launcher" }` |
 
+### `GET /minecraft/api/v1/admin/launcher/settings`
+
+Сохранённые настройки сборки из `data/launcher-settings.json`. Без файла возвращаются значения по умолчанию: адрес из `PUBLIC_API_URL` или `https://<DOMAIN>/minecraft/api`, название `Custom Minecraft Launcher`, `appId` `ru.jenison.cml`, пустая версия.
+
+Ответ `200`:
+
+```json
+{
+  "apiUrl": "https://example.com/minecraft/api",
+  "productName": "Custom Minecraft Launcher",
+  "appId": "ru.jenison.cml",
+  "version": "",
+  "theme": {},
+  "hasIcon": false,
+  "iconDataUrl": null
+}
+```
+
+`iconDataUrl` — PNG из `data/launcher-icon.png` в виде data URL, либо `null`.
+
+| Статус | Когда |
+|--------|--------|
+| `500` | Файл настроек есть, но он повреждён. `{ "error": "Файл настроек лаунчера повреждён" }` |
+
+### `PUT /minecraft/api/v1/admin/launcher/settings`
+
+Тело JSON: `apiUrl`, `productName`, `appId`, `version`, `theme`.
+
+| Поле | Правило |
+|------|---------|
+| `apiUrl` | `http` или `https` URL, без завершающего `/` в сохранённом виде |
+| `productName` | 1–60 символов, без управляющих |
+| `appId` | reverse-domain, например `ru.example.launcher` |
+| `version` | пустая строка или `X.Y.Z` |
+| `theme` | объект `--color-*` → hex, `rgb`/`hsl` или `color-mix` |
+
+Ответ `200` — сохранённый объект без полей иконки.
+
+`400` — `{ "error": "<что именно не так>" }`.
+
+### `PUT /minecraft/api/v1/admin/launcher/icon`
+
+Multipart-поле `file`. Принимается PNG, у которого в IHDR обе стороны не меньше 256, размер файла не больше 2 МБ. Файл пишется в `data/launcher-icon.png`.
+
+Ответ `200`: `{ "ok": true }`.
+
+| Статус | Когда |
+|--------|--------|
+| `400` | Нет файла, это не PNG, картинка меньше 256×256 или файл больше 2 МБ |
+
+### `POST /minecraft/api/v1/admin/launcher/build`
+
+Ставит сборку в очередь и сразу отвечает, не дожидаясь electron-builder.
+
+Ответ `202`:
+
+```json
+{ "status": "running" }
+```
+
+Сервер делает `git fetch` ветки или тега `LAUNCHER_REPO_REF` из `LAUNCHER_REPO_URL`, сбрасывает рабочую копию, подставляет настройки в исходники лаунчера (корень репозитория) и запускает `npm ci`, `npm run build`, `electron-builder --win nsis --publish never`. Готовый `launcher-setup-<версия>.exe` заменяет содержимое `launcher/`, рядом пишутся `data/latest.yml` и `data/version.json`.
+
+| Статус | Когда |
+|--------|--------|
+| `409` | Сборка уже идёт. `{ "error": "Сборка уже выполняется" }` |
+| `500` | Не удалось даже поставить задачу. `{ "error": "Error starting launcher build" }` |
+
+Ошибка самой сборки в этот ответ не попадает: она видна в `GET /launcher/build` как `status: "failed"`.
+
+### `GET /minecraft/api/v1/admin/launcher/build`
+
+Состояние последней сборки в этом процессе и хвост лога (до 200 строк).
+
+Ответ `200`:
+
+```json
+{
+  "status": "running",
+  "startedAt": "2026-09-25T01:00:00.000Z",
+  "finishedAt": null,
+  "commit": "<sha>",
+  "version": "1.8.0",
+  "error": null,
+  "log": "$ npm ci\n..."
+}
+```
+
+`status`: `idle`, `running`, `success`, `failed`. После перезапуска процесса состояние снова `idle`, файл `builds/build.log` остаётся.
+
 ## Legacy API
 
 Префикс: `/minecraft/api`. Токен не нужен. Контракт старых клиентов.
@@ -325,6 +414,16 @@ Modrinth вызывается без ключа. CurseForge использует
 | `404` | В `launcher/` нет файлов. Текст `No file found in launcher directory` |
 | `500` | Текст `Error downloading file` или `{ "error": "Error downloading file" }` |
 
+### `GET /minecraft/api/launcher-setup-<версия>.exe`
+
+Файл из `launcher/` с именем `launcher-setup-<версия>.exe`. electron-updater запрашивает его по относительному пути из `latest.yml`. Другие имена этим маршрутом не отдаются.
+
+| Статус | Когда |
+|--------|--------|
+| `404` | Имя не подходит под `launcher-setup-*.exe` или файла нет. `{ "error": "File not found" }` |
+| `400` | В имени есть выход из каталога. `{ "error": "Invalid path" }` |
+| `500` | `{ "error": "Error downloading file" }` |
+
 ## Панель `/admin`
 
 Статика из собранного `admin/dist`, если каталог есть на диске. Любой путь под `/admin` без файла отдаёт `index.html`.
@@ -335,7 +434,7 @@ Vite `base` — `/admin/`, поэтому клиентские пути таки
 |------|----------|
 | `/admin/login` | Вход |
 | `/admin/files` | Файлы сборки и каталог модов |
-| `/admin/launcher` | Загрузка установщика |
+| `/admin/launcher` | Настройки, сборка и ручная загрузка установщика |
 | `/admin/pack` | Редирект на `/admin/files` |
 | любой другой | Редирект на `/admin/files` |
 

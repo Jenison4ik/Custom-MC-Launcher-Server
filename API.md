@@ -38,6 +38,7 @@ docker compose -f docker-compose.local.yml up --build
 | `game/` | Распакованная сборка |
 | `data/` | `manifest.json`, `minecraft_files.zip`, `version.json`, `latest.yml` |
 | `launcher/` | Файлы установщика лаунчера |
+| `builds/` | Клон исходников лаунчера и кэш сборки |
 | `uploads/` | Временные загрузки |
 
 ## Авторизация
@@ -79,6 +80,10 @@ curl -X POST http://localhost:8080/minecraft/api/v1/auth/login \
 ### `GET /minecraft/api/downloadGame.exe`
 
 Первый файл из `launcher/`.
+
+### `GET /minecraft/api/launcher-setup-<версия>.exe`
+
+Конкретный установщик из `launcher/`. Этот адрес electron-updater берёт из `latest.yml`. Отдаются только имена вида `launcher-setup-*.exe`.
 
 ## v1, публично
 
@@ -154,3 +159,49 @@ JSON `{ "source", "projectId", "gameVersion", "loader" }`. Сервер скач
 ### `POST /minecraft/api/v1/admin/launcher`
 
 Заголовок `version`, multipart-поле `file` (ZIP установщика) и текстовое поле `yml` (содержимое `latest.yml`).
+
+### `GET /minecraft/api/v1/admin/launcher/settings`
+
+Настройки сборки лаунчера. Если файл ещё не сохраняли, адрес API берётся из `PUBLIC_API_URL` или `https://<DOMAIN>/minecraft/api`.
+
+```json
+{
+  "apiUrl": "https://example.com/minecraft/api",
+  "productName": "Custom Minecraft Launcher",
+  "appId": "ru.jenison.cml",
+  "version": "",
+  "theme": { "--color-bg": "#0c0d10" },
+  "hasIcon": false,
+  "iconDataUrl": null
+}
+```
+
+Пустая `version` значит: взять версию из `package.json` репозитория.
+
+### `PUT /minecraft/api/v1/admin/launcher/settings`
+
+Те же поля, кроме `hasIcon` и `iconDataUrl`. `appId` — reverse-domain. `version` пустая или `X.Y.Z`. В `theme` только токены `--color-*` и значения hex, `rgb`, `hsl` или `color-mix`.
+
+### `PUT /minecraft/api/v1/admin/launcher/icon`
+
+Multipart-поле `file`: PNG не меньше 256×256.
+
+### `POST /minecraft/api/v1/admin/launcher/build`
+
+Запускает сборку и сразу отвечает `202 { "status": "running" }`. Сервер клонирует `LAUNCHER_REPO_URL` (`LAUNCHER_REPO_REF`, по умолчанию `main`), подставляет настройки и собирает Windows NSIS. Повторный запрос, пока сборка идёт, отвечает `409`.
+
+### `GET /minecraft/api/v1/admin/launcher/build`
+
+```json
+{
+  "status": "idle",
+  "startedAt": null,
+  "finishedAt": null,
+  "commit": null,
+  "version": null,
+  "error": null,
+  "log": ""
+}
+```
+
+`status`: `idle`, `running`, `success`, `failed`. `log` — хвост `builds/build.log`.

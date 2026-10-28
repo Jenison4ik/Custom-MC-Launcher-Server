@@ -17,3 +17,4 @@ services:
       - ./data:/app/data
       - ./game:/app/game
       - ./launcher:/app/launcher
+      - ./builds:/app/builds
